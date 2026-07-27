@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+	<!DOCTYPE html>
 <html lang="id">
 <head>
 <meta charset="UTF-8">
@@ -136,7 +136,8 @@
     <label>Nama</label>
     <select id="lgName"><option value="">— pilih nama —</option></select>
     <label>PIN</label>
-    <input id="lgPin" type="password" inputmode="numeric" onkeydown="if(event.key==='Enter')doLogin()">
+    <input id="lgPin" type="password" minlength="6" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')doLogin()">
+</input>
     <button onclick="doLogin()">Masuk</button>
     <div class="login-err" id="lgErr"></div>
   </div>
@@ -230,6 +231,7 @@ async function initLogin(){
 async function doLogin(){
   const name=document.getElementById('lgName').value, pin=document.getElementById('lgPin').value;
   if(!name||!pin){document.getElementById('lgErr').textContent='Pilih nama dan isi PIN';return;}
+if(pin.length<6){document.getElementById('lgErr').textContent='PIN minimal 6 karakter';return;}
   const d=await fetch(API,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({action:'login',name:name,pin:pin})}).then(r=>r.json());
   if(!d.ok){document.getElementById('lgErr').textContent='Nama atau PIN salah';return;}
   S.token=d.token;S.name=d.name;S.role=d.role;
@@ -535,7 +537,7 @@ function parseTB(text){
   text.split(/\r?\n/).forEach(function(l){
     const m=l.match(/^(\d{4}-\d{3,6})\s+(.{1,55}?)\s{2,}([\d,().\- ]+)$/);
     if(!m)return;
-    const nums=(m[3].match(/\(?[\d,]+\.\d{2}\)?/g)||[]).map(num);
+    const nums=(m[3].match(/-?\(?[\d,]+\.\d{2}\)?/g)||[]).map(num);
     if(nums.length<5)return;
     acc[m[1]]={name:m[2].trim(),beg:nums[0],dr:nums[1],cr:nums[2],end:nums[4]};
   });
@@ -553,7 +555,7 @@ function parseAging(text){
     if(cur==null)return;
     const bm=l.match(/^\s*\d+\s+(.+?)\s{2,}(\d{2}\/\d{2}\/\d{2})\s+(\S+)\s+([\d,().\- ]+)$/);
     if(!bm)return;
-    const nums=(bm[4].match(/\(?[\d,]+\.\d{2}\)?/g)||[]).map(num);
+    const nums=(bm[4].match(/-?\(?[\d,]+\.\d{2}\)?/g)||[]).map(num);
     if(nums.length<4)return;
     const ending=nums[3];
     const dp=bm[2].split('/').map(Number);
