@@ -358,11 +358,7 @@ async function pushFile(u,kind,payloadObj,fname){
   try{
     const r=await api({action:'saveFileData',period:sel(),unit:u,kind:kind,fname:fname,payload:JSON.stringify(payloadObj)});
     if(!r.ok)throw new Error(r.err||'gagal');
-const at=new Date().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'});
-    if(S.files[u]&&S.files[u][kind]){S.files[u][kind].uploader=S.name;S.files[u][kind].at=at;}
-    if(S.state.filesMeta){S.state.filesMeta[u]=S.state.filesMeta[u]||{};S.state.filesMeta[u][kind]={fname:fname,uploader:S.name,at:at,hasPayload:true};}
-    const bb=document.getElementById('ub_'+u);
-    if(bb&&S.openUnits[S.section+'|'+u])bb.innerHTML=unitBody(u);
+    if(S.state.filesMeta){S.state.filesMeta[u]=S.state.filesMeta[u]||{};S.state.filesMeta[u][kind]={fname:fname,uploader:S.name,at:'baru saja',hasPayload:true};}
   }catch(e){
     toast('File terparse lokal, TAPI gagal simpan ke server ('+e.message+') — user lain tidak akan melihatnya');
   }
@@ -398,8 +394,8 @@ function unitBody(u){
     return h;
   }
   let h='<div class="mSub" style="margin-top:8px">'+sel()+' · File diparse di browser; hasil parse ikut tersimpan ke server (bisa dilanjut user lain).</div>';
-  h+=fileRow(u,'tb','TB (txt)','.txt');
-  if(showAging)h+=fileRow(u,'aging','A/R Aging (txt)','.txt');
+  h+=fileRow(u,'tb','TB (txt/csv)','.txt,.csv');
+  if(showAging)h+=fileRow(u,'aging','A/R Aging (txt/csv)','.txt,.csv');
   if(showAdv)h+=fileRow(u,'adv','Advance Deposit (xlsx)','.xlsx,.xlsm');
   if(showDrr){
     (DRR_SUB[u]||[u]).forEach(function(sub,i){
@@ -692,6 +688,74 @@ function parseADV(wb,period){
   return {sheet:sn.trim(),total:total,saldoTB:saldoTB};
 }
 
+/* ===== CSV VHP Cloud (TSD/TPI/TSBK) ===== */
+function csvRow(line){
+  const out=[];let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(q){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if(c==='"')q=true;
+    else if(c===','){out.push(cur);cur='';}
+    else cur+=c;
+  }
+  out.push(cur);return out;
+}
+function deEnt(s){return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"');}
+function looksCsv(text){return /"Account Number"|"Article Number"/.test(text.slice(0,4000));}
+function parseTBCsv(text){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/);
+  const hi=lines.findIndex(function(l){return l.indexOf('"Account Number"')>=0;});
+  if(hi<0)throw new Error("Header 'Account Number' tidak ditemukan — yakin ini TB CSV?");
+  const hdr=csvRow(lines[hi]).map(function(h){return h.trim();});
+  const col={};hdr.forEach(function(h,i){col[h]=i;});
+  ['Account Number','Account Name','Beginning Balance','Total Debit','Total Credit','Ending Balance'].forEach(function(k){
+    if(col[k]==null)throw new Error("Kolom '"+k+"' tidak ada di TB CSV — format berubah?");
+  });
+  const acc={};
+  for(let i=hi+1;i<lines.length;i++){
+    if(!lines[i])continue;
+    const r=csvRow(lines[i]);
+    const no=(r[col['Account Number']]||'').trim();
+    if(!/^\d{4}-\d{3,6}$/.test(no))continue; // skip header section (1110), Subtotal, kosong
+    acc[no]={name:deEnt((r[col['Account Name']]||'').trim()),
+      beg:num(r[col['Beginning Balance']]||'0'),dr:num(r[col['Total Debit']]||'0'),
+      cr:num(r[col['Total Credit']]||'0'),end:num(r[col['Ending Balance']]||'0')};
+  }
+  return acc;
+}
+function parseAgingCsv(text){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/);
+  const hi=lines.findIndex(function(l){return l.indexOf('"Article Number"')>=0;});
+  if(hi<0)throw new Error("Header 'Article Number' tidak ditemukan — yakin ini Aging CSV?");
+  const hdr=csvRow(lines[hi]).map(function(h){return h.trim();});
+  const col={};hdr.forEach(function(h,i){col[h]=i;});
+  const iOut=(col['Outstanding']!=null)?col['Outstanding']:8;
+  const groups={};let cur=null;
+  for(let i=hi+1;i<lines.length;i++){
+    if(!lines[i])continue;
+    const r=csvRow(lines[i]);
+    const c0=(r[0]||'').trim();
+    const gh=c0.match(/^(\d{1,3})\s*-$/);
+    if(gh){ // baris group: "    1  -" | "BCA VISA"
+      cur=Number(gh[1]);
+      groups[cur]={no:cur,name:deEnt((r[1]||'').trim()),bills:[],total:0};
+      continue;
+    }
+    if(cur==null)continue;
+    const dateS=(r[3]||'').trim();
+    if(!/^\d{2}\/\d{2}\/\d{2}$/.test(dateS)||!/^\d+$/.test(c0))continue;
+    const ending=num(r[iOut]||'0');
+    if(isNaN(ending))continue;
+    const cust=deEnt((r[1]||'').trim().replace(/[\s,]+$/,''));
+    const billNo=(r[4]||'').trim();
+    const dp=dateS.split('/').map(Number);
+    groups[cur].total+=ending;
+    if(Math.abs(ending)>0.005)
+      groups[cur].bills.push({cust:cust,date:dateS,dt:new Date(2000+dp[2],dp[1]-1,dp[0]),billNo:billNo,ending:ending});
+  }
+  return groups;
+}
+
 /* ============ RECON ============ */
 function loadFile(inp,kind,unit){
   const f=inp.files[0];if(!f)return;
@@ -716,21 +780,23 @@ function loadFile(inp,kind,unit){
   }else{
     rd.onload=function(e){try{
       const t=e.target.result;
+      const isCsv=looksCsv(t);
       if(kind==='tb'){
-        const acc=parseTB(t);
+        const acc=isCsv?parseTBCsv(t):parseTB(t);
         if(!Object.keys(acc).length)throw new Error('Tidak ada baris akun terbaca — yakin ini file TB?');
         S.files[unit].tb={accounts:acc,fname:f.name};
-        msg.innerHTML='TB OK: '+Object.keys(acc).length+' akun';
+        msg.innerHTML='TB OK ('+(isCsv?'CSV Cloud':'TXT')+'): '+Object.keys(acc).length+' akun';
         pushFile(unit,'tb',{accounts:acc},f.name);
       }else{
-        const g=parseAging(t);
+        const g=isCsv?parseAgingCsv(t):parseAging(t);
         if(!Object.keys(g).length)throw new Error('Tidak ada group tender terbaca — yakin ini file Aging?');
         S.files[unit].aging={groups:g,fname:f.name};
-        msg.innerHTML='Aging OK: '+Object.keys(g).length+' group tender';
+        msg.innerHTML='Aging OK ('+(isCsv?'CSV Cloud':'TXT')+'): '+Object.keys(g).length+' group tender';
         pushFile(unit,'aging',{groups:g},f.name);
       }
     }catch(err){msg.innerHTML='<span style="color:var(--none)">'+esc(err.message)+'</span>';}};
-    rd.readAsText(f,'latin1');
+    // CSV Cloud = UTF-8 (ber-BOM); TXT Desktop = latin1
+    if(/\.csv$/i.test(f.name))rd.readAsText(f);else rd.readAsText(f,'latin1');
   }
 }
 
@@ -752,19 +818,12 @@ async function runRecon(unit){
       byCoa[m.coa]=byCoa[m.coa]||{coa:m.coa,names:[],aging:0};
       byCoa[m.coa].aging+=g.total;
       byCoa[m.coa].names.push(g.name);
-const thr=(String(m.rt||'').toUpperCase()==='LEDGER_EXEMPT'||m.thr==null)?null:Number(m.thr);
+      const thr=(String(m.rt||'').toUpperCase()==='LEDGER_EXEMPT'||m.thr==null)?null:Number(m.thr);
       if(thr!=null){
         const pe=periodEnd();
-        const seen={};
         g.bills.forEach(function(b){
           const age=Math.floor((pe-b.dt)/86400000);
-          if(age<=thr)return;
-          const base=g.no+'|'+b.billNo;
-          seen[base]=(seen[base]||0)+1;
-          const n=seen[base];
-          const k=(n>1)?base+'#'+n:base;
-          const nm=g.name+' \u00b7 '+b.cust+' \u00b7 '+b.date+' \u00b7 #'+b.billNo+((n>1)?' (dup '+n+')':'');
-          exc.push({key:k,name:nm,aging:b.ending,age:age});
+          if(age>thr)exc.push({key:g.no+'|'+b.billNo,name:g.name+' · '+b.cust+' · '+b.date+' · #'+b.billNo,aging:b.ending,age:age});
         });
       }
     });
