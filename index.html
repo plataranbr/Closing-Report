@@ -173,7 +173,8 @@ const API = 'https://script.google.com/macros/s/AKfycbzWxgWtwJgBDbGZMfMTqqVcAhGb
 const BANKS = ['BCA','BRI','BNI','MANDIRI','BSI','BTN','PANIN','CIMB'];
 const DRR_SUB = { PATIO: ['PATIO','PATB'] }; // unit dgn >1 DRR (outlet)
 const TOL = 1;
-let S = { token:null, name:null, role:null, state:null, section:'AR', files:{}, openUnits:{} };
+let S = { token:null, name:null, role:null, state:null, section:'AR', files:{}, openUnits:{}, hydrated:{}, lastPeriod:null };
+function RO(){ return S.state && S.state.periodStatus==='CLOSED'; }
 function sel(){ return document.getElementById('selPeriod').value; }
 
 async function api(body){
@@ -258,8 +259,30 @@ function fillPeriods(){
 
 async function loadState(){
   const period=document.getElementById('selPeriod').value;
+  if(S.lastPeriod!==period){ S.files={}; S.hydrated={}; S.lastPeriod=period; }
   const d=await api({action:'getState',period:period,withDetail:true});
-  S.state=d; renderChips(); renderMatrix();
+  S.state=d; mergePeriods(); updateCloseBtn(); renderChips(); renderMatrix();
+  Object.keys(S.openUnits).forEach(function(k){ if(k.indexOf(S.section+'|')===0) hydrateUnit(k.split('|')[1]); });
+}
+/* dropdown periode: 3 bulan terakhir + semua periode yg dikenal server (Periods tab) */
+function mergePeriods(){
+  const sel=document.getElementById('selPeriod'),cur=sel.value;
+  const have={};[].slice.call(sel.options).forEach(function(o){have[o.value]=1;});
+  (S.state.periods||[]).forEach(function(p){
+    if(have[p.p])return;have[p.p]=1;
+    const o=document.createElement('option');o.value=o.textContent=p.p;sel.appendChild(o);
+  });
+  [].slice.call(sel.options).forEach(function(o){
+    const st=(S.state.periods||[]).find(function(p){return p.p===o.value;});
+    o.textContent=o.value+(st&&st.st==='CLOSED'?' (closed)':'');
+  });
+  sel.value=cur;
+}
+function updateCloseBtn(){
+  const b=document.getElementById('btnClose');
+  if(S.role!=='ADMIN')return;
+  b.textContent=RO()?'Buka Kembali Periode':'Tutup Periode';
+  b.onclick=RO()?doReopenPeriod:doClosePeriod;
 }
 function units(){ return [...new Set(S.state.map.map(m=>m.unit))].sort(); }
 function tasks(){ return S.state.master.filter(t=>t[1]===S.section).sort((a,b)=>a[5]-b[5]); }
@@ -300,19 +323,67 @@ function renderMatrix(){
 }
 function unitToggled(el){
   const u=el.dataset.u,k=S.section+'|'+u;
-  if(el.open){S.openUnits[k]=true;const b=document.getElementById('ub_'+u);if(b&&!b.innerHTML)b.innerHTML=unitBody(u);}
+  if(el.open){S.openUnits[k]=true;const b=document.getElementById('ub_'+u);if(b&&!b.innerHTML)b.innerHTML=unitBody(u);hydrateUnit(u);}
   else delete S.openUnits[k];
+}
+/* ===== HYDRATE: tarik payload parse dari server (lazy, sekali per unit per periode) ===== */
+async function hydrateUnit(u){
+  if(S.hydrated[u])return;
+  const metaU=(S.state.filesMeta||{})[u];
+  if(!metaU)return;
+  const need=Object.keys(metaU).filter(function(k){return metaU[k].hasPayload&&!(S.files[u]&&S.files[u][k]);});
+  if(!need.length){S.hydrated[u]=true;return;}
+  S.hydrated[u]=true; // set dulu agar tidak double-fetch saat toggle cepat
+  try{
+    const d=await api({action:'getFileData',period:sel(),unit:u});
+    if(!d.ok)throw new Error(d.err||'gagal');
+    S.files[u]=S.files[u]||{};
+    Object.keys(d.files||{}).forEach(function(k){
+      if(S.files[u][k])return; // lokal lebih baru, jangan timpa
+      const f=d.files[k];
+      let val;
+      try{val=JSON.parse(f.payload);}catch(e){return;}
+      if(k==='aging'&&val.groups)Object.values(val.groups).forEach(function(g){(g.bills||[]).forEach(function(b){b.dt=new Date(b.dt);});});
+      S.files[u][k]={fname:f.fname,uploader:f.uploader,at:f.at};
+      if(k==='tb')S.files[u][k].accounts=val.accounts;
+      else if(k==='aging')S.files[u][k].groups=val.groups;
+      else S.files[u][k].vals=val.vals;
+    });
+    const b=document.getElementById('ub_'+u);
+    if(b&&S.openUnits[S.section+'|'+u])b.innerHTML=unitBody(u);
+  }catch(e){S.hydrated[u]=false;}
+}
+/* kirim payload parse ke server (fire-and-forget dgn notifikasi) */
+async function pushFile(u,kind,payloadObj,fname){
+  try{
+    const r=await api({action:'saveFileData',period:sel(),unit:u,kind:kind,fname:fname,payload:JSON.stringify(payloadObj)});
+    if(!r.ok)throw new Error(r.err||'gagal');
+const at=new Date().toLocaleString('id-ID',{dateStyle:'short',timeStyle:'short'});
+    if(S.files[u]&&S.files[u][kind]){S.files[u][kind].uploader=S.name;S.files[u][kind].at=at;}
+    if(S.state.filesMeta){S.state.filesMeta[u]=S.state.filesMeta[u]||{};S.state.filesMeta[u][kind]={fname:fname,uploader:S.name,at:at,hasPayload:true};}
+    const bb=document.getElementById('ub_'+u);
+    if(bb&&S.openUnits[S.section+'|'+u])bb.innerHTML=unitBody(u);
+  }catch(e){
+    toast('File terparse lokal, TAPI gagal simpan ke server ('+e.message+') — user lain tidak akan melihatnya');
+  }
 }
 function fileRow(u,kind,label,accept){
   const F=S.files[u]||{},got=!!F[kind];
+  const meta=((S.state.filesMeta||{})[u]||{})[kind];
+  let info='';
+  if(got)info=esc(F[kind].fname)+(F[kind].uploader?' &middot; '+esc(F[kind].uploader)+' '+esc(F[kind].at||''):'');
+  else if(meta)info=esc(meta.fname)+' &middot; '+esc(meta.uploader)+' '+esc(meta.at)+(meta.hasPayload?'':' &middot; <i>payload diarsipkan</i>');
   return '<div class="fileRow"><label>'+label+'</label>'+
     '<input type="file" accept="'+accept+'" onclick="return preUp(this,\''+kind+'\',\''+u+'\')" onchange="loadFile(this,\''+kind+'\',\''+u+'\')">'+
-    (got?'<span class="upok">&#10003;</span>':'')+
-    '<span class="fname">'+(got?esc(F[kind].fname):'')+'</span></div>';
+    ((got||(meta&&meta.hasPayload))?'<span class="upok">&#10003;</span>':'')+
+    '<span class="fname">'+info+'</span></div>';
 }
 function preUp(inp,kind,u){
+  if(RO()){toast('Periode sudah ditutup — upload dikunci');return false;}
   const F=S.files[u]||{};
-  if(F[kind]&&!confirm('File '+kind.toUpperCase()+' unit '+u+' sudah diupload ('+F[kind].fname+').\nUpload lagi akan MENGGANTI hasil parse sebelumnya. Lanjut?')){return false;}
+  const meta=((S.state.filesMeta||{})[u]||{})[kind];
+  const old=F[kind]?F[kind].fname:(meta?meta.fname+' (oleh '+meta.uploader+')':null);
+  if(old&&!confirm('File '+kind.toUpperCase()+' unit '+u+' sudah diupload ('+old+').\nUpload lagi akan MENGGANTI hasil parse sebelumnya (di server juga). Lanjut?')){return false;}
   return true;
 }
 function unitBody(u){
@@ -321,7 +392,12 @@ function unitBody(u){
   const showAging=(S.section==='AR')&&(S.role!=='IA');
   const showAdv=(S.section==='AR')&&(S.role!=='IA');
   const showDrr=(S.section==='IA')&&(S.role!=='AR');
-  let h='<div class="mSub" style="margin-top:8px">'+sel()+' · File diparse di browser, hanya hasil dikirim ke server. Satu TB dipakai semua task.</div>';
+  if(RO()){
+    let h='<div class="mSub" style="margin-top:8px">'+sel()+' · <b style="color:var(--none)">PERIODE DITUTUP</b> — read-only. ADMIN dapat membuka kembali dari sidebar.</div>';
+    ts.forEach(function(t){h+=taskSection(u,t);});
+    return h;
+  }
+  let h='<div class="mSub" style="margin-top:8px">'+sel()+' · File diparse di browser; hasil parse ikut tersimpan ke server (bisa dilanjut user lain).</div>';
   h+=fileRow(u,'tb','TB (txt)','.txt');
   if(showAging)h+=fileRow(u,'aging','A/R Aging (txt)','.txt');
   if(showAdv)h+=fileRow(u,'adv','Advance Deposit (xlsx)','.xlsx,.xlsm');
@@ -381,7 +457,7 @@ function ia3Body(u,taskId,st,det,needN){
     h+='<table class="daytbl"><tr><th>Tanggal</th><th class="rt">Omset</th><th style="min-width:150px">Catatan</th><th></th></tr>';
     rows.forEach(function(d){
       h+='<tr><td>'+esc(String(d.key).replace(/^D/,''))+'</td><td class="rt">'+fmt(d.aging)+'</td><td class="mini">'+esc(d.note||'')+'</td>'+
-         '<td><button class="delBtn" title="Hapus baris" onclick="delOmset(\''+u+'\',\''+esc(d.key)+'\')">&#128465;</button></td></tr>';
+         '<td>'+(RO()?'':'<button class="delBtn" title="Hapus baris" onclick="delOmset(\''+u+'\',\''+esc(d.key)+'\')">&#128465;</button>')+'</td></tr>';
     });
     h+='<tr class="totrow"><td>Total input</td><td class="rt">'+fmt(tot)+'</td><td></td><td></td></tr>';
     h+='</table>';
@@ -390,6 +466,7 @@ function ia3Body(u,taskId,st,det,needN){
     const vr=tot-csc;
     h+='<div class="mini" style="margin:6px 0">Saldo TB Cash Sales Clearance (1110-10999): <b>'+fmt(csc)+'</b> · selisih vs total input: <b>'+fmt(vr)+'</b>'+(Math.abs(vr)<=TOL?' <span class="badge bOK">COCOK</span>':' <span class="badge bWARN">SELISIH</span>')+'</div>';
   }else h+='<div class="mini" style="margin:6px 0">Upload TB di atas utk banding saldo 1110-10999.</div>';
+  if(RO())return h+'<div class="mini">Periode ditutup — input terkunci.</div>';
   h+='<div class="mini" style="margin:8px 0 4px"><b>Input omset — bisa beberapa tanggal sekaligus:</b></div>';
   h+='<div id="csRows_'+u+'">'+csRow(u,0)+csRow(u,1)+csRow(u,2)+'</div>';
   h+='<div style="margin:8px 0"><button class="mGhost" onclick="addCsRow(\''+u+'\')">+ Baris</button> '+
@@ -446,6 +523,7 @@ function detRow(d,dispName){
   return h+'</tr>';
 }
 function statusCtl(u,taskId,st,needN){
+  if(RO())return '<div class="mini">Periode ditutup — status terkunci.</div>';
   const bkFlow=(taskId==='AR-2');
   let h='<div class="stBtns">'+['OPEN','IN_PROGRESS'].map(function(x){
     return '<button class="'+(x===st?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\''+x+'\')">'+x.replace('_',' ')+'</button>';}).join('');
@@ -626,10 +704,12 @@ function loadFile(inp,kind,unit){
       if(kind.indexOf('drr')===0){
         S.files[unit][kind]={vals:parseDRR(wb),fname:f.name};
         msg.innerHTML='DRR OK ('+(kind.indexOf('@')>0?kind.split('@')[1]:unit)+'): Net Rev MTD '+fmt(S.files[unit][kind].vals.net);
+        pushFile(unit,kind,{vals:S.files[unit][kind].vals},f.name);
       }else{
         const a=parseADV(wb,sel());
         S.files[unit].adv={vals:a,fname:f.name};
         msg.innerHTML='ADV OK (sheet '+esc(a.sheet)+'): Total Saldo Akhir '+fmt(a.total)+' · Saldo TB versi file '+fmt(a.saldoTB);
+        pushFile(unit,'adv',{vals:a},f.name);
       }
     }catch(err){msg.innerHTML='<span style="color:var(--none)">'+esc(err.message)+'</span>';}};
     rd.readAsArrayBuffer(f);
@@ -641,11 +721,13 @@ function loadFile(inp,kind,unit){
         if(!Object.keys(acc).length)throw new Error('Tidak ada baris akun terbaca — yakin ini file TB?');
         S.files[unit].tb={accounts:acc,fname:f.name};
         msg.innerHTML='TB OK: '+Object.keys(acc).length+' akun';
+        pushFile(unit,'tb',{accounts:acc},f.name);
       }else{
         const g=parseAging(t);
         if(!Object.keys(g).length)throw new Error('Tidak ada group tender terbaca — yakin ini file Aging?');
         S.files[unit].aging={groups:g,fname:f.name};
         msg.innerHTML='Aging OK: '+Object.keys(g).length+' group tender';
+        pushFile(unit,'aging',{groups:g},f.name);
       }
     }catch(err){msg.innerHTML='<span style="color:var(--none)">'+esc(err.message)+'</span>';}};
     rd.readAsText(f,'latin1');
@@ -653,6 +735,7 @@ function loadFile(inp,kind,unit){
 }
 
 async function runRecon(unit){
+  if(RO()){toast('Periode sudah ditutup');return;}
   const F=S.files[unit]||{},period=sel();
   const out=document.getElementById('ro_'+unit);
   let html='',jobs=[];
@@ -669,12 +752,19 @@ async function runRecon(unit){
       byCoa[m.coa]=byCoa[m.coa]||{coa:m.coa,names:[],aging:0};
       byCoa[m.coa].aging+=g.total;
       byCoa[m.coa].names.push(g.name);
-      const thr=(String(m.rt||'').toUpperCase()==='LEDGER_EXEMPT'||m.thr==null)?null:Number(m.thr);
+const thr=(String(m.rt||'').toUpperCase()==='LEDGER_EXEMPT'||m.thr==null)?null:Number(m.thr);
       if(thr!=null){
         const pe=periodEnd();
+        const seen={};
         g.bills.forEach(function(b){
           const age=Math.floor((pe-b.dt)/86400000);
-          if(age>thr)exc.push({key:g.no+'|'+b.billNo,name:g.name+' · '+b.cust+' · '+b.date+' · #'+b.billNo,aging:b.ending,age:age});
+          if(age<=thr)return;
+          const base=g.no+'|'+b.billNo;
+          seen[base]=(seen[base]||0)+1;
+          const n=seen[base];
+          const k=(n>1)?base+'#'+n:base;
+          const nm=g.name+' \u00b7 '+b.cust+' \u00b7 '+b.date+' \u00b7 #'+b.billNo+((n>1)?' (dup '+n+')':'');
+          exc.push({key:k,name:nm,aging:b.ending,age:age});
         });
       }
     });
@@ -827,7 +917,7 @@ async function runRecon(unit){
 /* ============ AR-4 ============ */
 function ar4Body(u,st){
   const det=detOf(u,'AR-4');
-  const canEdit=(S.role==='AR'||S.role==='ADMIN')&&st!=='CLEARED';
+  const canEdit=(S.role==='AR'||S.role==='ADMIN')&&st!=='CLEARED'&&!RO();
   const tbAcc=S.files[u]&&S.files[u].tb?S.files[u].tb.accounts['1111-18888']:null;
   let h='<div style="margin-top:6px">';
   BANKS.forEach(function(b){
@@ -886,10 +976,20 @@ async function approveAR4(u){
 }
 
 async function doClosePeriod(){
-  const p=document.getElementById('selPeriod').value;
-  if(!confirm('Tutup periode '+p+'? Log & detail pindah ke Archive.'))return;
-  await api({action:'closePeriod',period:p});
-  toast('Periode diarsipkan');loadState();
+  const p=sel();
+  if(!confirm('Tutup periode '+p+'?\n• Log & detail pindah ke Archive\n• Payload file diarsipkan ke spreadsheet arsip\n• Periode jadi read-only (bisa dibuka lagi oleh ADMIN)'))return;
+  const r=await api({action:'closePeriod',period:p});
+  if(!r.ok){toast('Gagal: '+(r.err||''));return;}
+  toast('Periode ditutup · '+(r.archived||0)+' file part diarsipkan');
+  S.files={};S.hydrated={};loadState();
+}
+async function doReopenPeriod(){
+  const p=sel();
+  if(!confirm('Buka kembali periode '+p+'? Log, detail, dan payload file direstore — tercatat di Audit.'))return;
+  const r=await api({action:'reopenPeriod',period:p});
+  if(!r.ok){toast('Gagal: '+(r.err||''));return;}
+  toast('Periode dibuka kembali · '+(r.restored||0)+' file part direstore');
+  S.files={};S.hydrated={};loadState();
 }
 initLogin();
 </script>
