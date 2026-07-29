@@ -187,7 +187,7 @@ async function api(body){
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2400);}
 function fmt(n){ if(n===''||n==null||isNaN(n)) return '-'; return Number(n).toLocaleString('id-ID',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function num(s){ s=String(s).trim(); const neg=s.startsWith('(')&&s.endsWith(')'); s=s.replace(/[(),]/g,''); const v=parseFloat(s); return neg?-v:v; }
+function num(s){ s=String(s).replace(/^['\u2018\u2019\s]+/,'').trim(); const neg=s.startsWith('(')&&s.endsWith(')'); s=s.replace(/[(),]/g,''); const v=parseFloat(s); return neg?-v:v; }
 /* input accounting: tampil 1.234.567,89 (id-ID), parse balik via accVal */
 function accVal(el){
   if(!el)return null;
