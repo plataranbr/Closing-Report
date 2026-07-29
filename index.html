@@ -745,7 +745,7 @@ function parseAgingCsv(text){
     const dateS=(r[3]||'').trim();
     if(!/^\d{2}\/\d{2}\/\d{2}$/.test(dateS)||!/^\d+$/.test(c0))continue;
     const ending=num(r[iOut]||'0');
-    if(isNaN(ending))continue;
+    if(isNaN(ending)){groups.__bad=(groups.__bad||0)+1;continue;}
     const cust=deEnt((r[1]||'').trim().replace(/[\s,]+$/,''));
     const billNo=(r[4]||'').trim();
     const dp=dateS.split('/').map(Number);
@@ -791,7 +791,8 @@ function loadFile(inp,kind,unit){
         const g=isCsv?parseAgingCsv(t):parseAging(t);
         if(!Object.keys(g).length)throw new Error('Tidak ada group tender terbaca — yakin ini file Aging?');
         S.files[unit].aging={groups:g,fname:f.name};
-        msg.innerHTML='Aging OK ('+(isCsv?'CSV Cloud':'TXT')+'): '+Object.keys(g).length+' group tender';
+		const bad=g.__bad||0;delete g.__bad;
+        msg.innerHTML='Aging OK ('+(isCsv?'CSV Cloud':'TXT')+'): '+Object.keys(g).length+' group tender'+(bad?' · <b style="color:var(--none)">'+bad+' baris GAGAL parse — angka mungkin kurang, cek format!</b>':'');
         pushFile(unit,'aging',{groups:g},f.name);
       }
     }catch(err){msg.innerHTML='<span style="color:var(--none)">'+esc(err.message)+'</span>';}};
