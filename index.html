@@ -250,11 +250,13 @@ function enterApp(){
 function fillPeriods(){
   const sel=document.getElementById('selPeriod');sel.innerHTML='';
   const d=new Date();
-  for(let i=0;i<3;i++){
+  for(let i=0;i<4;i++){
     const p=new Date(d.getFullYear(),d.getMonth()-i,1);
     const v=p.getFullYear()+'-'+String(p.getMonth()+1).padStart(2,'0');
     const o=document.createElement('option');o.value=v;o.textContent=v;sel.appendChild(o);
   }
+  const pv=new Date(d.getFullYear(),d.getMonth()-1,1);
+  sel.value=pv.getFullYear()+'-'+String(pv.getMonth()+1).padStart(2,'0');
 }
 
 async function loadState(){
@@ -289,6 +291,9 @@ function tasks(){ return S.state.master.filter(t=>t[1]===S.section).sort((a,b)=>
 function logOf(u,t){ return S.state.log.find(r=>r[1]===u&&r[2]===t); }
 function detOf(u,t){ return S.state.detail.filter(d=>d.unit===u&&d.task===t); }
 function flaggedNoNote(u,t){ return detOf(u,t).filter(d=>d.flag&&d.flag!=='OK'&&!d.note); }
+/* task yg WAJIB nol beneran: catatan saja tidak cukup utk DONE */
+const STRICT_ZERO={'AR-1':1};
+function openVariance(u,t){ return STRICT_ZERO[t]?detOf(u,t).filter(d=>d.flag&&d.flag!=='OK').length:0; }
 
 const SECLBL={AR:'Account Receivable',IA:'Income Audit',STATUS:'Status'};
 const SECDOT={AR:'#4C7BE0',IA:'#C9A227',STATUS:'#2E7D52'};
@@ -416,7 +421,7 @@ function taskSection(u,t){
   else if(taskId==='IA-3')inner=ia3Body(u,taskId,st,det,needs.length);
   else{
     inner+=det.length?detTable(u,taskId,det):'<div class="mini">Belum ada detail tersimpan.</div>';
-    inner+=statusCtl(u,taskId,st,needs.length);
+    inner+=statusCtl(u,taskId,st,needs.length,openVariance(u,taskId));
   }
   const badge='<span class="st st'+st+(needs.length?' needNote':'')+'" style="min-width:80px">'+st.replace('_',' ')+(needs.length?' &#9888;':'')+'</span>';
   return '<details class="rc"'+(needs.length?' open':'')+'><summary>'+esc(t[2])+' '+badge+'</summary><div class="rcBody" id="ts_'+u+'_'+taskId+'">'+inner+'</div></details>';
@@ -443,6 +448,13 @@ function detTable(u,taskId,det){
   det.forEach(function(d){h+=detRow(d);});
   return h+'</table><div style="margin:8px 0"><button class="mGhost" onclick="saveNotes(\''+u+'\',\''+taskId+'\')">Simpan Catatan</button></div>';
 }
+function ia3Var(u){ /* selisih input vs TB; null bila TB belum ada */
+  const F=S.files[u]||{};
+  const csc=F.tb&&F.tb.accounts['1110-10999']?F.tb.accounts['1110-10999'].end:null;
+  if(csc==null)return null;
+  let tot=0;detOf(u,'IA-3').forEach(function(d){tot+=Number(d.aging)||0;});
+  return tot-csc;
+}
 function ia3Body(u,taskId,st,det,needN){
   const F=S.files[u]||{};
   const csc=F.tb&&F.tb.accounts['1110-10999']?F.tb.accounts['1110-10999'].end:null;
@@ -467,7 +479,8 @@ function ia3Body(u,taskId,st,det,needN){
   h+='<div id="csRows_'+u+'">'+csRow(u,0)+csRow(u,1)+csRow(u,2)+'</div>';
   h+='<div style="margin:8px 0"><button class="mGhost" onclick="addCsRow(\''+u+'\')">+ Baris</button> '+
      '<button class="mBtn" onclick="saveOmset(\''+u+'\')">Simpan Semua</button></div>';
-  h+=statusCtl(u,taskId,st,needN);
+  const v3=ia3Var(u);
+  h+=statusCtl(u,taskId,st,needN,(v3!=null&&Math.abs(v3)>TOL)?1:0);
   return h;
 }
 function csRow(u,i){
@@ -518,19 +531,23 @@ function detRow(d,dispName){
   else h+='<td class="mini">'+esc(d.note||'')+'</td>';
   return h+'</tr>';
 }
-function statusCtl(u,taskId,st,needN){
+function statusCtl(u,taskId,st,needN,strictN){
   if(RO())return '<div class="mini">Periode ditutup — status terkunci.</div>';
   const bkFlow=(taskId==='AR-2');
+  strictN=strictN||0;
+  const lockTitle=strictN?'Masih ada '+strictN+' item selisih — harus 0 dulu':(needN?'Isi catatan item berflag dulu':'');
+  const lock=needN||strictN;
   let h='<div class="stBtns">'+['OPEN','IN_PROGRESS'].map(function(x){
     return '<button class="'+(x===st?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\''+x+'\')">'+x.replace('_',' ')+'</button>';}).join('');
   if(bkFlow){
     if(st==='DONE')h+='<button class="on" disabled>DONE</button>';
-    else h+='<button '+(needN?'disabled title="Isi catatan item berflag dulu"':'')+' class="'+(st==='WAITING_BK'?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\'WAITING_BK\')">KIRIM KE BK</button>';
+    else h+='<button '+(lock?'disabled title="'+lockTitle+'"':'')+' class="'+(st==='WAITING_BK'?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\'WAITING_BK\')">KIRIM KE BK</button>';
   }else{
-    h+='<button '+(needN?'disabled title="Isi catatan item berflag dulu"':'')+' class="'+(st==='DONE'?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\'DONE\')">DONE</button>';
+    h+='<button '+(lock?'disabled title="'+lockTitle+'"':'')+' class="'+(st==='DONE'?'on':'')+'" onclick="setTaskStatus(\''+u+'\',\''+taskId+'\',\'DONE\')">DONE</button>';
   }
   h+='</div>';
-  if(needN)h+='<div class="mini" style="color:var(--none);margin-bottom:6px">&#9888; '+needN+' item berflag belum ada catatan — '+(bkFlow?'Kirim ke BK':'DONE')+' terkunci.</div>';
+  if(strictN)h+='<div class="mini" style="color:var(--none);margin-bottom:6px">&#9888; '+strictN+' item masih SELISIH — task ini wajib nol. Perbaiki jurnal lalu upload ulang TB &amp; jalankan recon. Catatan saja tidak membuka DONE.</div>';
+  else if(needN)h+='<div class="mini" style="color:var(--none);margin-bottom:6px">&#9888; '+needN+' item berflag belum ada catatan — '+(bkFlow?'Kirim ke BK':'DONE')+' terkunci.</div>';
   if(bkFlow&&st==='WAITING_BK'){
     h+='<div class="mini" style="margin-bottom:6px">Menunggu approval BK atas catatan outstanding.</div>';
     if(S.role==='BK'||S.role==='ADMIN')h+='<div style="margin-bottom:8px"><button class="mBtn" onclick="approveTask(\''+u+'\',\''+taskId+'\')">Approve — DONE</button></div>';
@@ -543,6 +560,8 @@ async function approveTask(u,taskId){
 }
 async function setTaskStatus(u,taskId,st){
   if((st==='DONE'||st==='WAITING_BK')&&flaggedNoNote(u,taskId).length){toast('Isi catatan item berflag dulu');return;}
+  if(st==='DONE'&&openVariance(u,taskId)){toast('Masih ada selisih — task ini wajib nol');return;}
+  if(st==='DONE'&&taskId==='IA-3'){const v3=ia3Var(u);if(v3!=null&&Math.abs(v3)>TOL){toast('Input omset belum cocok dengan saldo TB 1110-10999');return;}}
   const L=logOf(u,taskId);
   await api({action:'updateTask',period:sel(),unit:u,taskId:taskId,status:st,note:L?L[6]:''});
   toast(taskId+' &rarr; '+st.replace('_',' '));await loadState();
@@ -643,22 +662,32 @@ function parseDRR(wb){
   const ws=wb.Sheets['ACTUAL'];
   if(!ws)throw new Error("Sheet 'ACTUAL' tidak ditemukan di DRR");
   const rows=XLSX.utils.sheet_to_json(ws,{header:1});
-  const want={'TOTAL NET REVENUE':'net','TOTAL FOOD REVENUE':'food','TOTAL BEVERAGE REVENUE':'bev','TOTAL SERVICE CHARGE':'sc','TOTAL PB1':'pb1'};
-  const out={};
+  /* SUM = baris per sub-outlet (TIGADARI+PIDARI, dst) harus dijumlah.
+     MAX = baris grand total yg bisa muncul >1x (jangan didobel). */
+  const want={'TOTAL NET REVENUE':['net','MAX'],'TOTAL FOOD REVENUE':['food','SUM'],
+              'TOTAL BEVERAGE REVENUE':['bev','SUM'],'TOTAL FB OTHER REVENUE':['oth','SUM'],
+              'TOTAL SERVICE CHARGE':['sc','MAX'],'TOTAL PB1':['pb1','MAX']};
+  const out={};const hit={};
   rows.forEach(function(r){
     const lbl=String(r[1]||'').trim().toUpperCase();
     Object.keys(want).forEach(function(k){
-      if(lbl===k||lbl.indexOf(k)===0){
-        if(out[want[k]]!=null)return;
-        const mtd=Number(r[34]);
-        let daily=0;for(let c=3;c<=33;c++){const v=Number(r[c]);if(!isNaN(v))daily+=v;}
-        if(isNaN(mtd))throw new Error('Kolom MTD kosong utk '+k);
-        if(Math.abs(daily-mtd)>1)throw new Error('Format DRR berubah: sum harian != MTD utk '+k+' ('+fmt(daily)+' vs '+fmt(mtd)+')');
-        out[want[k]]=mtd;
-      }
+      if(lbl!==k&&lbl.indexOf(k)!==0)return;
+      const fld=want[k][0],mode=want[k][1];
+      const mtd=Number(r[34]);
+      let daily=0;for(let c=3;c<=33;c++){const v=Number(r[c]);if(!isNaN(v))daily+=v;}
+      if(isNaN(mtd))throw new Error('Kolom MTD kosong utk '+k);
+      if(Math.abs(daily-mtd)>1)throw new Error('Format DRR berubah: sum harian != MTD utk '+k+' ('+fmt(daily)+' vs '+fmt(mtd)+')');
+      hit[fld]=(hit[fld]||0)+1;
+      out[fld]=(out[fld]==null)?mtd:(mode==='SUM'?out[fld]+mtd:Math.max(out[fld],mtd));
     });
   });
   if(out.net==null)throw new Error("Baris 'TOTAL NET REVENUE' tidak ditemukan");
+  out.nSect=hit.food||0;
+  /* cek silang: NET harus = FOOD + BEV + FB OTHER (semua sub-outlet) */
+  if(out.food!=null&&out.bev!=null){
+    const sum=out.food+out.bev+(out.oth||0);
+    if(Math.abs(out.net-sum)>1)out.warn='NET ('+fmt(out.net)+') != FOOD+BEV+OTHER ('+fmt(sum)+') — cek struktur DRR/sub-outlet';
+  }
   return out;
 }
 function parseADV(wb,period){
@@ -767,7 +796,10 @@ function loadFile(inp,kind,unit){
       const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
       if(kind.indexOf('drr')===0){
         S.files[unit][kind]={vals:parseDRR(wb),fname:f.name};
-        msg.innerHTML='DRR OK ('+(kind.indexOf('@')>0?kind.split('@')[1]:unit)+'): Net Rev MTD '+fmt(S.files[unit][kind].vals.net);
+        const dv=S.files[unit][kind].vals;
+        msg.innerHTML='DRR OK ('+(kind.indexOf('@')>0?kind.split('@')[1]:unit)+'): Net Rev MTD '+fmt(dv.net)+
+          (dv.nSect>1?' \u00b7 '+dv.nSect+' sub-outlet dijumlah':'')+
+          (dv.warn?' \u00b7 <b style="color:var(--none)">'+esc(dv.warn)+'</b>':'');
         pushFile(unit,kind,{vals:S.files[unit][kind].vals},f.name);
       }else{
         const a=parseADV(wb,sel());
@@ -828,9 +860,14 @@ async function runRecon(unit){
         });
       }
     });
-    const clr18=tb['1111-18888'];
+    /* akun clearance = semua 1111-1888x di TB + COA clearance di mapping (Tender_No>=3000) */
+    const clrCoas={};
+    Object.keys(tb).forEach(function(c){if(c.indexOf('1111-1888')===0)clrCoas[c]=1;});
+    map.forEach(function(m){if(Number(m.no)>=3000&&m.coa)clrCoas[m.coa]=1;});
+    const clrList=Object.keys(clrCoas).sort();
     let totAging=0;Object.values(F.aging.groups).forEach(function(g){totAging+=g.total;});
-    let totTb=(clr18?clr18.end:0);Object.values(byCoa).forEach(function(x){if(tb[x.coa])totTb+=tb[x.coa].end;});
+    let totTb=0;clrList.forEach(function(c){if(tb[c])totTb+=tb[c].end;});
+    Object.values(byCoa).forEach(function(x){if(tb[x.coa]&&!clrCoas[x.coa])totTb+=tb[x.coa].end;});
     const totVar=totAging-totTb;
     const ar1lines=[{key:'TOTAL',name:'TOTAL Aging vs TOTAL TB AR (termasuk AR CC Clearance)',aging:totAging,tb:totTb,varr:totVar,flag:Math.abs(totVar)<=TOL?'OK':'SELISIH'}];
     Object.values(byCoa).forEach(function(x){
@@ -841,8 +878,13 @@ async function runRecon(unit){
       ar1lines.push({key:x.coa,name:(lbl+' · Aging: '+x.names.join(', ')).slice(0,110),aging:x.aging,tb:tbv==null?'':tbv,varr:varr==null?'':varr,
         flag:tbv==null?'AKUN TIDAK ADA DI TB':(Math.abs(varr)<=TOL?'OK':'SELISIH')});
     });
-    ar1lines.push({key:'1111-18888',name:'AR CC Clearance (harus 0)',aging:'',tb:clr18?clr18.end:'',varr:'',
-      flag:(!clr18||Math.abs(clr18.end)<=TOL)?'OK':'BELUM CLEAR'});
+    clrList.forEach(function(c){
+      const A=tb[c];
+      if(!A)return; // di mapping tapi tidak ada di TB unit ini: skip (bukan temuan)
+      ar1lines.push({key:c,name:'AR Clearance '+c+' \u00b7 '+A.name+' (harus 0)',
+        aging:'',tb:A.end,varr:'',
+        flag:Math.abs(A.end)<=TOL?'OK':'BELUM CLEAR'});
+    });
     unmapped.forEach(function(g){ar1lines.push({key:'T'+g.no,name:g.name+' (TENDER TIDAK TERDAFTAR DI MAPPING)',aging:g.total,tb:'',varr:'',flag:'TIDAK TERDAFTAR'});});
     const ar1bad=ar1lines.filter(function(l){return l.flag!=='OK';}).length;
     jobs.push({taskId:'AR-1',lines:ar1lines,result:ar1bad?'SELISIH':'BALANCE',
@@ -923,7 +965,6 @@ async function runRecon(unit){
       if(Math.abs(vr)>TOL)ia1bad++;
       ia1lines.push({key:k,name:kw+' (DRR'+(drrs.length>1?' gabungan — Ref outlet belum lengkap':'')+') vs '+accs.join('+'),aging:dv,tb:tbv,varr:vr,flag:Math.abs(vr)<=TOL?'OK':'SELISIH'});
     });
-    revAcc.forEach(function(c){ia1lines.push({key:c,name:tb[c].name,aging:'',tb:tb[c].cr,varr:'',flag:''});});
     jobs.push({taskId:'IA-1',lines:ia1lines,result:ia1bad?'SELISIH':'BALANCE',variance:varr});
     html+='<div><b>Revenue DRR vs TB:</b> '+fmt(v.net)+' vs '+fmt(revTot)+' '+(Math.abs(varr)<=TOL?'<span class="badge bOK">BALANCE</span>':'<span class="badge bBAD">selisih '+fmt(varr)+'</span>')+'</div>';
 
@@ -978,7 +1019,16 @@ async function runRecon(unit){
 function ar4Body(u,st){
   const det=detOf(u,'AR-4');
   const canEdit=(S.role==='AR'||S.role==='ADMIN')&&st!=='CLEARED'&&!RO();
-  const tbAcc=S.files[u]&&S.files[u].tb?S.files[u].tb.accounts['1111-18888']:null;
+  /* target = total semua akun AR Clearance (1111-1888x + mapping Tender_No>=3000) */
+  const accs=S.files[u]&&S.files[u].tb?S.files[u].tb.accounts:null;
+  let tbAcc=null,clrDet=[];
+  if(accs){
+    const cs={};
+    Object.keys(accs).forEach(function(c){if(c.indexOf('1111-1888')===0)cs[c]=1;});
+    S.state.map.filter(function(m){return m.unit===u&&Number(m.no)>=3000&&m.coa;}).forEach(function(m){cs[m.coa]=1;});
+    let t=0;Object.keys(cs).sort().forEach(function(c){if(accs[c]){t+=accs[c].end;clrDet.push(c+' '+fmt(accs[c].end));}});
+    if(clrDet.length)tbAcc={end:t};
+  }
   let h='<div style="margin-top:6px">';
   BANKS.forEach(function(b){
     const d=det.find(function(x){return x.key===b;});
@@ -988,7 +1038,7 @@ function ar4Body(u,st){
   h+='<div class="bankRow"><label>Total target</label>'+accInput('bk_'+u+'_TOT',(tbAcc?tbAcc.end:''),'data-live="'+u+'" '+(canEdit?'':'disabled')+' placeholder="isi manual bila TB belum diupload" style="width:180px;padding:8px;border:1px solid var(--line);border-radius:8px"')+'</div>';
   h+='<div class="mini" id="bk_'+u+'_DIFF"></div></div>';
   setTimeout(function(){ar4Live(u);},0);
-  if(tbAcc)h+='<div class="mini">Auto dari TB 1111-18888: <b>'+fmt(tbAcc.end)+'</b> — boleh di-override manual.</div>';
+  if(tbAcc)h+='<div class="mini">Auto dari TB — total '+clrDet.length+' akun AR Clearance ('+clrDet.join(' + ')+') = <b>'+fmt(tbAcc.end)+'</b> — boleh di-override manual.</div>';
   else h+='<div class="mini">TB belum diupload di sesi ini — isi Total target manual, atau upload TB dulu di atas.</div>';
   if(canEdit)h+='<div style="margin-top:10px"><button class="mBtn" onclick="saveAR4(\''+u+'\')">Simpan Alokasi &rarr; Kirim ke BK</button></div>';
   if(st==='WAITING_BK'){
