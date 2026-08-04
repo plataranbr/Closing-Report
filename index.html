@@ -931,7 +931,9 @@ async function runRecon(unit){
       if(d.vals.bev!=null){v.bev+=d.vals.bev;v.hasBev=true;}
     });
     const revAcc=Object.keys(tb).filter(function(c){return c.charAt(0)==='4';});
-    const revTot=revAcc.reduce(function(sm,c){return sm+tb[c].cr;},0);
+    /* net movement: Cr - Dr, krn allowance/discount = debit di 4xxx (contra revenue) */
+    const revNet=function(c){return tb[c].cr-tb[c].dr;};
+    const revTot=revAcc.reduce(function(sm,c){return sm+revNet(c);},0);
     const varr=v.net-revTot;
     const ia1lines=[{key:'NET',name:'Total Net Revenue (DRR'+(drrs.length>1?' gabungan':'')+') vs Total Credit 4xxx (TB)',aging:v.net,tb:revTot,varr:varr,flag:Math.abs(varr)<=TOL?'OK':'SELISIH'}];
     let ia1bad=Math.abs(varr)<=TOL?0:1;
@@ -951,7 +953,7 @@ async function runRecon(unit){
         drrs.forEach(function(d){
           const coa=refCoa(d.sub,kw);
           const dv=(k==='FOOD'?d.vals.food:d.vals.bev)||0;
-          const tbv=tb[coa].cr,vr=dv-tbv;
+          const tbv=revNet(coa),vr=dv-tbv;
           if(Math.abs(vr)>TOL)ia1bad++;
           ia1lines.push({key:k+'_'+d.sub,name:kw+' '+d.sub+' (DRR) vs '+coa+' ('+tb[coa].name+')',aging:dv,tb:tbv,varr:vr,flag:Math.abs(vr)<=TOL?'OK':'SELISIH'});
         });
@@ -960,7 +962,7 @@ async function runRecon(unit){
       const dv=(k==='FOOD'?v.food:v.bev);
       const accs=revAcc.filter(function(c){return tb[c].name.toUpperCase().indexOf(kw)>=0;});
       if(!accs.length){ia1lines.push({key:k,name:kw+' (DRR) — akun TB tidak ditemukan',aging:dv,tb:'',varr:'',flag:'AKUN TIDAK DITEMUKAN'});ia1bad++;return;}
-      const tbv=accs.reduce(function(sm,c){return sm+tb[c].cr;},0);
+      const tbv=accs.reduce(function(sm,c){return sm+revNet(c);},0);
       const vr=dv-tbv;
       if(Math.abs(vr)>TOL)ia1bad++;
       ia1lines.push({key:k,name:kw+' (DRR'+(drrs.length>1?' gabungan — Ref outlet belum lengkap':'')+') vs '+accs.join('+'),aging:dv,tb:tbv,varr:vr,flag:Math.abs(vr)<=TOL?'OK':'SELISIH'});
